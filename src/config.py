@@ -73,25 +73,26 @@ class vTrainConfig:
         self.intra_node_bandwidth = intra_node_bandwidth
         self.node_size = node_size
         self.trace_path = trace_path
-        
-        # target model
+        # FSDP-specific parameters
+        self.use_fsdp = use_fsdp
+        self.fsdp_shard_size = fsdp_shard_size
+        self.fsdp_auto_wrap_policy = fsdp_auto_wrap_policy
+        self.fsdp_state_dict_type = fsdp_state_dict_type
+
+        # Target model
         self.model_arch = model_arch
-        
-        # validate configuration
+
+        # Validate the configuration
         self.validate_config()
-            
 
     def validate_config(self):
         """Validate configuration constraints."""
-        
         if self.num_gpus is None:
             assert all(x is not None for x in [self.tensor_parallel_size, self.data_parallel_size, self.pipeline_parallel_size])
             self.num_gpus = self.tensor_parallel_size * self.pipeline_parallel_size * self.data_parallel_size
         elif any(x is None for x in [self.tensor_parallel_size, self.data_parallel_size, self.pipeline_parallel_size]):
             if sum(x is None for x in [self.tensor_parallel_size, self.data_parallel_size, self.pipeline_parallel_size]) > 1:
                 raise AssertionError("Only one of tensor_parallel_size, data_parallel_size, or pipeline_parallel_size can be None.")
-            
-            # Calculate the missing value
             if self.tensor_parallel_size is None:
                 self.tensor_parallel_size = self.num_gpus // (self.pipeline_parallel_size * self.data_parallel_size)
             elif self.data_parallel_size is None:
@@ -101,29 +102,26 @@ class vTrainConfig:
         else:
             assert self.num_gpus == (self.tensor_parallel_size * self.pipeline_parallel_size * self.data_parallel_size), \
                 "num_gpus must be equivalent to (tensor_parallel_size * pipeline_parallel_size * data_parallel_size)."
-        
+
         if self.pipeline_parallel_size <= 1:
             self.micro_batch_size = self.global_batch_size // self.data_parallel_size
-            print (f"[vTrainConfig] micro_batch_size is set by 'global_batch_size // data_parallel_size' as pipeline_parallel_size is 1")
 
-            
-        assert self.global_batch_size % self.data_parallel_size == 0, \
-            "global_batch_size must be divisible by data_parallel_size."
-        assert self.global_batch_size % self.micro_batch_size == 0, \
-            "global_batch_size must be divisible by micro_batch_size."
-        assert self.num_layers % self.pipeline_parallel_size == 0, \
-            "num_layers must be divisible by pipeline_parallel_size."
-        assert self.hidden_size % self.num_attention_heads == 0, \
-            "hidden_size must be divisible by num_attention_heads."
-        assert self.num_attention_heads % self.tensor_parallel_size == 0, \
-            "num_attention_heads must be divisible by tensor_parallel_size."
-        
+        assert self.global_batch_size % self.data_parallel_size == 0, "global_batch_size must be divisible by data_parallel_size."
+        assert self.global_batch_size % self.micro_batch_size == 0, "global_batch_size must be divisible by micro_batch_size."
+        assert self.num_layers % self.pipeline_parallel_size == 0, "num_layers must be divisible by pipeline_parallel_size."
+        assert self.hidden_size % self.num_attention_heads == 0, "hidden_size must be divisible by num_attention_heads."
+        assert self.num_attention_heads % self.tensor_parallel_size == 0, "num_attention_heads must be divisible by tensor_parallel_size."
+
+        if self.use_fsdp:
+            assert self.pipeline_parallel_size == 1, "FSDP cannot be used with pipeline parallelism."
+            assert self.data_parallel_size > 1, "FSDP requires multiple GPUs for data sharding."
+            if self.fsdp_shard_size is not None:
+                assert self.fsdp_shard_size > 0, "fsdp_shard_size must be greater than zero."
 
     def save_to_file(self, file_path: str):
         """Save configuration to a JSON file."""
         with open(file_path, 'w') as f:
             json.dump(self.__dict__, f, indent=4)
-
 
     @classmethod
     def load_from_file(cls, file_path: str):
@@ -131,7 +129,6 @@ class vTrainConfig:
         with open(file_path, 'r') as f:
             config_dict = json.load(f)
         return cls(**config_dict)
-    
 
     def __repr__(self):
         return (
@@ -155,11 +152,13 @@ class vTrainConfig:
             f"  intra_node_bandwidth={self.intra_node_bandwidth},\n"
             f"  pipeline_scheduling='{self.pipeline_scheduling}',\n"
             f"  node_size={self.node_size},\n"
-            f"  trace_path='{self.trace_path}'\n"
+            f"  trace_path='{self.trace_path}',\n"
+            f"  use_fsdp={self.use_fsdp},\n"
+            f"  fsdp_shard_size={self.fsdp_shard_size},\n"
+            f"  fsdp_auto_wrap_policy='{self.fsdp_auto_wrap_policy}',\n"
+            f"  fsdp_state_dict_type='{self.fsdp_state_dict_type}'\n"
             ")"
         )
-
-    
 
 if __name__ == "__main__":
     import os

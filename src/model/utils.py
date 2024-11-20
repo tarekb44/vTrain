@@ -1,5 +1,5 @@
 import torch
-
+from torch.distributed.fsdp import FlatParameter
 
 def ensure_divisibility(numerator, denominator):
     """Ensure that numerator is divisible by the denominator."""
@@ -23,6 +23,10 @@ def split_tensor_along_last_dim(tensor, num_partitions,
         contiguous_split_chunks: If True, make each chunk contiguous
                                  in memory.
     """
+    # Handle FlatParameter tensors from FSDP
+    if isinstance(tensor, FlatParameter):
+        tensor = tensor._local_shard
+
     # Get the size and dimension.
     last_dim = tensor.dim() - 1
     last_dim_size = divide(tensor.size()[last_dim], num_partitions)

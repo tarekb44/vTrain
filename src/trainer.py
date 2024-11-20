@@ -1,9 +1,11 @@
 import os
 import torch
 import torch.nn as nn
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.wrap import auto_wrap
+from torch.distributed.fsdp import StateDictType
 
 from .model.fused_adam import FusedAdam as Adam
-
 from vtrain_profiler import init_trace, timestamp, finish_trace
 
 import logging
@@ -41,10 +43,33 @@ class Trainer():
     def __init__(self, config, model):
         self.config = config
         self.model = model
-        self.layers = [t[-1] for t in model.named_children()]
+
+        # Wrap the model with FSDP
+        if config.use_fsdp:
+            self.init_fsdp()
+
+        self.layers = [t[-1] for t in self.model.named_children()]
 
         for name, layer in self.model.named_children():
             layer.name = f"{name}"
+
+    def init_fsdp(self):
+        """Initialize FSDP with process groups and auto-wrap policy."""
+        auto_wrap_policy = None  # Define if a custom policy is needed
+        if self.config.fsdp_auto_wrap_policy == "transformer":
+            def transformer_auto_wrap_policy(module, recurse, unwrapped_params):
+                return isinstance(module, (nn.Linear, nn.Transformer))
+
+            auto_wrap_policy = transformer_auto_wrap_policy
+
+        # Apply FSDP wrapping
+        self.model = FSDP(
+            self.model,
+            auto_wrap_policy=auto_wrap_policy,
+            sharding_strategy=self.config.fsdp_shard_size,
+            state_dict_type=StateDictType[self.config.fsdp_state_dict_type.upper()],
+        )
+        logger.info("Model wrapped with FSDP")
 
     def train(self, log_filename):
         config = self.config
@@ -111,10 +136,16 @@ class Trainer():
         
 
     def train_step(self, model, inputs, labels, criterion, optimizer, profile=False):
+        # FSDP: Clear previous states
+        model.zero_grad(set_to_none=True)
+
+        # Forward pass
         outputs = model(inputs)
         loss = criterion(outputs, labels)
 
+        # Backward pass
         loss.backward()
 
+        # Optimization step
         optimizer.step(profile=profile)
         optimizer.zero_grad()
